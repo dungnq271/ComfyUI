@@ -13,6 +13,16 @@ tqdm
 psutil
 
 #non essential dependencies:
+python-dotenv
 kornia>=0.7.1
 spandrel
 soundfile
+
+jedi
+autopep8
+yapf
+black
+
+llama-index
+llama-index-agent-openai
+llama-index-llms-anthropic

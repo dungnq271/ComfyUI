@@ -1,15 +1,19 @@
 import torch
 
+
 class InstructPixToPixConditioning:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"positive": ("CONDITIONING", ),
-                             "negative": ("CONDITIONING", ),
-                             "vae": ("VAE", ),
-                             "pixels": ("IMAGE", ),
-                             }}
+        return {
+            "required": {
+                "positive": ("CONDITIONING",),
+                "negative": ("CONDITIONING",),
+                "vae": ("VAE",),
+                "pixels": ("IMAGE",),
+            }
+        }
 
-    RETURN_TYPES = ("CONDITIONING","CONDITIONING","LATENT")
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "LATENT")
     RETURN_NAMES = ("positive", "negative", "latent")
     FUNCTION = "encode"
 
@@ -22,7 +26,7 @@ class InstructPixToPixConditioning:
         if pixels.shape[1] != x or pixels.shape[2] != y:
             x_offset = (pixels.shape[1] % 8) // 2
             y_offset = (pixels.shape[2] % 8) // 2
-            pixels = pixels[:,x_offset:x + x_offset, y_offset:y + y_offset,:]
+            pixels = pixels[:, x_offset : x + x_offset, y_offset : y + y_offset, :]
 
         concat_latent = vae.encode(pixels)
 
@@ -39,6 +43,7 @@ class InstructPixToPixConditioning:
                 c.append(n)
             out.append(c)
         return (out[0], out[1], out_latent)
+
 
 NODE_CLASS_MAPPINGS = {
     "InstructPixToPixConditioning": InstructPixToPixConditioning,

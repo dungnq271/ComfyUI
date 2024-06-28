@@ -2,11 +2,16 @@
 
 import torch
 
-class DifferentialDiffusion():
+
+class DifferentialDiffusion:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"model": ("MODEL", ),
-                            }}
+        return {
+            "required": {
+                "model": ("MODEL",),
+            }
+        }
+
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "apply"
     CATEGORY = "_for_testing"
@@ -17,7 +22,9 @@ class DifferentialDiffusion():
         model.set_model_denoise_mask_function(self.forward)
         return (model,)
 
-    def forward(self, sigma: torch.Tensor, denoise_mask: torch.Tensor, extra_options: dict):
+    def forward(
+        self, sigma: torch.Tensor, denoise_mask: torch.Tensor, extra_options: dict
+    ):
         model = extra_options["model"]
         step_sigmas = extra_options["sigmas"]
         sigma_to = model.inner_model.model_sampling.sigma_min

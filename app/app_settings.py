@@ -3,13 +3,14 @@ import json
 from aiohttp import web
 
 
-class AppSettings():
+class AppSettings:
     def __init__(self, user_manager):
         self.user_manager = user_manager
 
     def get_settings(self, request):
         file = self.user_manager.get_request_user_filepath(
-            request, "comfy.settings.json")
+            request, "comfy.settings.json"
+        )
         if os.path.isfile(file):
             with open(file) as f:
                 return json.load(f)
@@ -18,7 +19,8 @@ class AppSettings():
 
     def save_settings(self, request, settings):
         file = self.user_manager.get_request_user_filepath(
-            request, "comfy.settings.json")
+            request, "comfy.settings.json"
+        )
         with open(file, "w") as f:
             f.write(json.dumps(settings, indent=4))
 

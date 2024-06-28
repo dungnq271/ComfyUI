@@ -1,9 +1,14 @@
-
-
 class CLIPTextEncodeControlnet:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"clip": ("CLIP", ), "conditioning": ("CONDITIONING", ), "text": ("STRING", {"multiline": True, "dynamicPrompts": True})}}
+        return {
+            "required": {
+                "clip": ("CLIP",),
+                "conditioning": ("CONDITIONING",),
+                "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+            }
+        }
+
     RETURN_TYPES = ("CONDITIONING",)
     FUNCTION = "encode"
 
@@ -15,11 +20,10 @@ class CLIPTextEncodeControlnet:
         c = []
         for t in conditioning:
             n = [t[0], t[1].copy()]
-            n[1]['cross_attn_controlnet'] = cond
-            n[1]['pooled_output_controlnet'] = pooled
+            n[1]["cross_attn_controlnet"] = cond
+            n[1]["pooled_output_controlnet"] = pooled
             c.append(n)
-        return (c, )
+        return (c,)
 
-NODE_CLASS_MAPPINGS = {
-    "CLIPTextEncodeControlnet": CLIPTextEncodeControlnet
-}
+
+NODE_CLASS_MAPPINGS = {"CLIPTextEncodeControlnet": CLIPTextEncodeControlnet}

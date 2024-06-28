@@ -8,6 +8,7 @@ from comfy.ldm.util import instantiate_from_config
 from comfy.ldm.modules.ema import LitEma
 import comfy.ops
 
+
 class DiagonalGaussianRegularizer(torch.nn.Module):
     def __init__(self, sample: bool = True):
         super().__init__()
@@ -165,7 +166,9 @@ class AutoencodingEngineLegacy(AutoencodingEngine):
             (1 + ddconfig["double_z"]) * embed_dim,
             1,
         )
-        self.post_quant_conv = comfy.ops.disable_weight_init.Conv2d(embed_dim, ddconfig["z_channels"], 1)
+        self.post_quant_conv = comfy.ops.disable_weight_init.Conv2d(
+            embed_dim, ddconfig["z_channels"], 1
+        )
         self.embed_dim = embed_dim
 
     def get_autoencoder_params(self) -> list:
@@ -218,9 +221,7 @@ class AutoencoderKL(AutoencodingEngineLegacy):
             kwargs["loss_config"] = kwargs.pop("lossconfig")
         super().__init__(
             regularizer_config={
-                "target": (
-                    "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"
-                )
+                "target": ("comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer")
             },
             **kwargs,
         )
