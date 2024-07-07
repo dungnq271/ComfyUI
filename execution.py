@@ -11,7 +11,10 @@ import torch
 import nodes
 
 import comfy.model_management
+from llama_index.core.query_pipeline import QueryPipeline
+from tools.utils.logger import setup_coloredlogs
 
+logger = setup_coloredlogs(__name__)
 
 def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
@@ -123,6 +126,84 @@ def format_value(x):
     else:
         return str(x)
 
+
+def recursive_add_link(
+    pipeline,
+    prompt,
+    current_item,
+):
+    if pipeline is None:
+        pipeline = QueryPipeline(verbose=True)
+
+    user_message = None
+    unique_id = current_item
+    inputs = prompt[unique_id]["inputs"]
+    class_type = prompt[unique_id]["class_type"]
+    class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
+    is_child_node = False
+    input_node_infos = []
+
+    logger.info("Class")
+    logger.info(class_type)
+    for x in inputs.copy():
+        if isinstance(inputs[x], list):
+            input_data = inputs.pop(x)
+            logger.info("Input data")
+            logger.info(input_data)
+            input_unique_id = input_data[0]
+            output_index = input_data[1]
+            kwargs, user_message, pipeline = recursive_add_link(
+                pipeline,
+                prompt,
+                input_unique_id
+            )
+            logger.info("Input node kwargs:")
+            logger.info(kwargs)
+            input_class_type = prompt[input_unique_id]["class_type"]
+            input_class_def = nodes.NODE_CLASS_MAPPINGS[input_class_type]
+            logger.info("Input class")
+            logger.info(input_class_type)
+            input_required_keys = list(input_class_def.INPUT_TYPES()["required"].keys())
+            logger.info("Input required keys:")
+            logger.info(input_required_keys)
+
+            input_node = input_class_def(**kwargs)
+            input_node_infos.append({
+                "src": input_node,
+                "src_module_key": input_class_type,
+                "src_key": input_required_keys[output_index],
+                "dest_key": x
+            })
+            is_child_node = True
+
+    logger.info("Inputs:")
+    logger.info(inputs)
+        
+    # Keep sending the message of the input node to the ouput node
+    if is_child_node:
+        node = class_def(**inputs)
+        pipeline.add(module_key=class_type, module=node)
+        for info in input_node_infos:
+            input_module = info["src"]
+            input_module_key = info["src_module_key"]
+            dest_key = info["dest_key"]
+            # logger.info(input_module, input_module_key, dest_key)
+            if input_module_key not in pipeline.module_dict:
+                pipeline.add(module_key=input_module_key, module=input_module)
+            pipeline.add_link(
+                src=input_module_key,
+                dest=class_type,
+                src_key=input_module_key,
+                dest_key=dest_key,
+            )
+        inputs.update({"user_message": user_message})
+    # If it's the input node, return the input node's inputs
+    else:
+        node = class_def()
+        pipeline.add(module_key=class_type, module=node)
+
+    return inputs, user_message, pipeline
+    
 
 def recursive_execute(
     server,
@@ -480,6 +561,76 @@ class PromptExecutor:
             self.server.last_node_id = None
             if comfy.model_management.DISABLE_SMART_MEMORY:
                 comfy.model_management.unload_all_models()
+
+    def pipeline_execute(self, prompt, prompt_id, extra_data={}, execute_outputs=[]):
+        nodes.interrupt_processing(False)
+
+        if "client_id" in extra_data:
+            self.server.client_id = extra_data["client_id"]
+        else:
+            self.server.client_id = None
+
+        self.status_messages = []
+        self.add_message("execution_start", {"prompt_id": prompt_id}, broadcast=False)
+
+        with torch.inference_mode():
+            # delete cached outputs if nodes don't exist for them
+            to_delete = []
+            for o in self.outputs:
+                if o not in prompt:
+                    to_delete += [o]
+            for o in to_delete:
+                d = self.outputs.pop(o)
+                del d
+            to_delete = []
+            for o in self.object_storage:
+                if o[0] not in prompt:
+                    to_delete += [o]
+                else:
+                    p = prompt[o[0]]
+                    if o[1] != p["class_type"]:
+                        to_delete += [o]
+            for o in to_delete:
+                d = self.object_storage.pop(o)
+                del d
+
+            for x in prompt:
+                recursive_output_delete_if_changed(
+                    prompt, self.old_prompt, self.outputs, x
+                )
+
+            current_outputs = set(self.outputs.keys())
+            for x in list(self.outputs_ui.keys()):
+                if x not in current_outputs:
+                    d = self.outputs_ui.pop(x)
+                    del d
+
+            comfy.model_management.cleanup_models(keep_clone_weights_loaded=True)
+            self.add_message(
+                "execution_cached",
+                {"nodes": list(current_outputs), "prompt_id": prompt_id},
+                broadcast=False,
+            )
+            executed = set()
+            output_node_id = None
+            to_execute = []
+
+            for node_id in list(execute_outputs):
+                to_execute += [(0, node_id)]
+
+            logger.info(to_execute)
+            output_node_id = to_execute.pop(0)[-1]
+            input_msg, pipeline = recursive_add_link(
+                pipeline=None,
+                prompt=prompt,
+                current_item=output_node_id,
+            )
+
+            for x in executed:
+                self.old_prompt[x] = copy.deepcopy(prompt[x])
+            self.server.last_node_id = None
+            if comfy.model_management.DISABLE_SMART_MEMORY:
+                comfy.model_management.unload_all_models()                
 
 
 def validate_inputs(prompt, item, validated):

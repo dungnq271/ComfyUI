@@ -124,7 +124,8 @@ def prompt_worker(q, server):
             prompt_id = item[1]
             server.last_prompt_id = prompt_id
 
-            e.execute(item[2], prompt_id, item[3], item[4])
+            # e.execute(item[2], prompt_id, item[3], item[4])
+            e.pipeline_execute(item[2], prompt_id, item[3], item[4])            
             need_gc = True
             q.task_done(
                 item_id,
