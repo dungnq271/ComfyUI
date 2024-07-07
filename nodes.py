@@ -1,4 +1,5 @@
 import os
+from typing import Any, Dict, List, Optional, Tuple, ClassVar
 import sys
 import json
 import hashlib
@@ -7,6 +8,12 @@ import math
 import time
 import random
 import logging
+
+from llama_index.core.llms import ChatMessage, LLM
+from llama_index.core.query_pipeline import InputComponent, CustomQueryComponent
+from llama_index.core.schema import NodeWithScore
+from llama_index.core.bridge.pydantic import Field
+from tools.retriever import DEFAULT_ALL_RETRIEVERS
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "comfy"))
 
@@ -19,7 +26,6 @@ from comfy.cli_args import args
 import importlib
 
 import folder_paths
-import wikipedia
 
 
 def before_node_execution():
@@ -30,116 +36,180 @@ def interrupt_processing(value=True):
     comfy.model_management.interrupt_current_processing(value)
 
 
-class Input:
+class Input(InputComponent):
+    RETURN_TYPES: ClassVar[Tuple] = ("TEXT",)
+    CATEGORY: ClassVar[str] = "input"
+    RETURN_TYPES = ("TEXT",)
+
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "text": ("STRING", {"multiline": True, "dynamicPrompts": True}),
+                "user_message": ("STRING", {"multiline": True, "dynamicPrompts": True}),
             }
         }
 
-    RETURN_TYPES = ("TEXT",)
-    FUNCTION = "generate"
 
-    CATEGORY = "prompt"
-
-    def generate(self, text):
-        return (text,)    
-
-
-class LLM:
+class Search:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model_name": (["gpt-3.5-turbo", "claude-3-haiku-20240307"],),
-                "system_prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}), 
-                "prompt": ("TEXT", ), 
-            }
-        }
-
-    RETURN_TYPES = ("TEXT",)
-    FUNCTION = "generate"
-
-    CATEGORY = "LLM"
-
-    def generate(self, model_name, system_prompt, prompt):
-        llm = comfy.llm.get_llm(model_name, system_prompt=system_prompt)
-        return (llm.complete(prompt).text,)
-
-
-class WikipediaSearch:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "language": (["en", "vi"], ),
-                "num_results": ("INT", {"dynamicPrompts": True}),
+                "tool_name": (["google_search", "wikipedia_search"], ),
                 "query": ("TEXT", ),
             }
         }
 
-    RETURN_TYPES = ("TEXT",)
-    FUNCTION = "search"
-
+    RETURN_TYPES = ("NODE",)
     CATEGORY = "SEARCH"
 
-    def search(self, language, num_results, query):
-        summaries = []
-        wikipedia.set_lang(language)
-        results = wikipedia.search(query)
+    def __init__(self, tool_name: str, **kwargs):
+        self.tool = DEFAULT_ALL_RETRIEVERS[tool_name]["retriever"]
 
-        if num_results > len(results):
-            num_results = len(results)
+    @property
+    def _input_keys(self) -> set:
+        """Input keys dict."""
+        # NOTE: These are required inputs. If you have optional inputs please override
+        # `optional_input_keys_dict`
+        return {"tool_name", "query"}
 
-        for idx in range(num_results):
-            try:
-                result = wikipedia.page(results[idx])
-                summary = result.summary
-                summaries.append(summary)
-            except wikipedia.exceptions.PageError as e:
-                print(e)                
+    @property
+    def _output_keys(self) -> set:
+        return {"nodes"}
 
-        return ("\n".join(summaries), )
+    def _run_component(self, **kwargs) -> Dict[str, Any]:
+        nodes = self.tool.retrieve(kwargs["query"])
+        return {"nodes": nodes}
+    
 
+DEFAULT_CONTEXT_PROMPT = (
+    "Here is some context that may be relevant:\n"
+    "-----\n"
+    "{node_context}\n"
+    "-----\n"
+    "Please write a response to the following question, using the above context:\n"
+    "{query_str}\n"
+)
 
-class End:
-    def __init__(self):
+class ResponseWithChatHistory(CustomQueryComponent):
+    llm: LLM = Field(..., description="LLM to use")
+    system_prompt: Optional[str] = Field(
+        default=None, description="System prompt to use for the LLM"
+    )
+    context_prompt: str = Field(
+        default=DEFAULT_CONTEXT_PROMPT,
+        description="Context prompt to use for the LLM",
+    )
+
+    OUTPUT_NODE: ClassVar[bool] = True
+    RETURN_TYPES: ClassVar[Tuple] = ("TEXT",)
+    CATEGORY: ClassVar[str] = "text"
+
+    def __init__(
+        self,
+        model_name,
+        system_prompt,
+        context_prompt: str | Any = None,
+        **kwargs
+    ):
+        self.llm = comfy.llm.get_llm(model_name)
+        self.system_prompt = system_prompt
+        self.context_prompt = context_prompt or DEFAULT_CONTEXT_PROMPT
         self.type = "output"
 
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "text": ("TEXT",),
-            },
+                "model_name": (["gpt-3.5-turbo", "claude-3-haiku-20240307"],),
+                "system_prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}), 
+            }
         }
 
-    RETURN_TYPES = ()
-    FUNCTION = "print_text"
+    def _validate_component_inputs(
+        self, input: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Validate component inputs during run_component."""
+        # NOTE: this is OPTIONAL but we show you where to do validation as an example
+        return input
 
-    OUTPUT_NODE = True
+    @property
+    def _input_keys(self) -> set:
+        """Input keys dict."""
+        # NOTE: These are required inputs. If you have optional inputs please override
+        # `optional_input_keys_dict`
+        return {"chat_history", "nodes", "query_str"}
 
-    CATEGORY = "text"
+    @property
+    def _output_keys(self) -> set:
+        return {"response"}
 
-    def print_text(self, text):
-        print(text)
-        return {"ui": {"text": [{"text": text, "type": self.type}]}}
+    def _prepare_context(
+        self,
+        chat_history: List[ChatMessage],
+        nodes: List[NodeWithScore],
+        query_str: str,
+    ) -> List[ChatMessage]:
+        node_context = ""
+        for idx, node in enumerate(nodes):
+            node_text = node.get_content(metadata_mode="llm")
+            node_context += f"Context Chunk {idx}:\n{node_text}\n\n"
+
+        formatted_context = self.context_prompt.format(
+            node_context=node_context, query_str=query_str
+        )
+        user_message = ChatMessage(role="user", content=formatted_context)
+
+        chat_history.append(user_message)
+
+        if self.system_prompt is not None:
+            chat_history = [
+                ChatMessage(role="system", content=self.system_prompt)
+            ] + chat_history
+
+        return chat_history
+
+    def _run_component(self, **kwargs) -> Dict[str, Any]:
+        """Run the component."""
+        chat_history = kwargs["chat_history"]
+        nodes = kwargs["nodes"]
+        query_str = kwargs["query_str"]
+
+        prepared_context = self._prepare_context(
+            chat_history, nodes, query_str
+        )
+
+        response = self.llm.chat(prepared_context)
+
+        return {"response": response}
+
+    async def _arun_component(self, **kwargs: Any) -> Dict[str, Any]:
+        """Run the component asynchronously."""
+        # NOTE: Optional, but async LLM calls are easy to implement
+        chat_history = kwargs["chat_history"]
+        nodes = kwargs["nodes"]
+        query_str = kwargs["query_str"]
+
+        prepared_context = self._prepare_context(
+            chat_history, nodes, query_str
+        )
+
+        response = await self.llm.achat(prepared_context)
+
+        return {"response": response}
 
 
 NODE_CLASS_MAPPINGS = {
     "Input": Input,
-    "LLM": LLM,
-    "WikipediaSearch": WikipediaSearch,
-    "End": End,
+    "Search": Search,
+    "Response": ResponseWithChatHistory,
 }
+
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Input": "Input (Prompt)",
-    "LLM": "LLM (System Prompt)",
-    "WikipediaSearch": "Wikipedia Search",
-    "End": "End",
+    "Search": "Search API",
+    "Response": "Response",
 }
 
 EXTENSION_WEB_DIRS = {}
