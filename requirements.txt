@@ -18,11 +18,28 @@ kornia>=0.7.1
 spandrel
 soundfile
 
+coloredlogs
 jedi
 autopep8
 yapf
 black
+pre-commit
+isort
+mypy
 
 llama-index
 llama-index-agent-openai
 llama-index-llms-anthropic
+llama-index-retrievers-bm25
+
+#youtube reader
+google-api-python-client
+youtube-transcript-api==0.6.2
+
+#wikipedia search
+wikipedia==1.4.0
+
+#image search
+google-images-search
+PyQt5
+matplotlib==3.9.0
