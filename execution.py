@@ -1,20 +1,21 @@
-import sys
 import copy
-import logging
-import threading
 import heapq
-import traceback
 import inspect
+import logging
+import sys
+import threading
+import traceback
 from typing import List, Literal, NamedTuple, Optional
 
 import torch
-import nodes
+from llama_index.core.query_pipeline import QueryPipeline
 
 import comfy.model_management
-from llama_index.core.query_pipeline import QueryPipeline
+import nodes
 from tools.utils.logger import setup_coloredlogs
 
 logger = setup_coloredlogs(__name__)
+
 
 def get_input_data(inputs, class_def, unique_id, outputs={}, prompt={}, extra_data={}):
     valid_inputs = class_def.INPUT_TYPES()
@@ -106,7 +107,7 @@ def get_output_data(obj, input_data_all):
             output_is_list = obj.OUTPUT_IS_LIST
 
         # merge node execution results
-        for i, is_list in zip(range(len(results[0])), output_is_list):
+        for i, is_list in zip(range(len(results[0])), output_is_list, strict=False):
             if is_list:
                 output.append([x for o in results for x in o[i]])
             else:
@@ -114,7 +115,7 @@ def get_output_data(obj, input_data_all):
 
     ui = dict()
     if len(uis) > 0:
-        ui = {k: [y for x in uis for y in x[k]] for k in uis[0].keys()}
+        ui = {k: [y for x in uis for y in x[k]] for k in uis[0]}
     return output, ui
 
 
@@ -127,83 +128,111 @@ def format_value(x):
         return str(x)
 
 
-def recursive_add_link(
+def recursive_add_node_link(
     pipeline,
     prompt,
     current_item,
 ):
-    if pipeline is None:
-        pipeline = QueryPipeline(verbose=True)
+    leaf_node_inputs = {}
+    root_node_inputs = {}
+    init_kwargs = {}
+    output_keys = {}
+    input_node_infos = []
+    is_child_node = False
 
-    user_message = None
     unique_id = current_item
     inputs = prompt[unique_id]["inputs"]
     class_type = prompt[unique_id]["class_type"]
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
-    is_child_node = False
-    input_node_infos = []
+
+    if pipeline is None:  # leaf node only
+        leaf_node_inputs[class_type] = {}
+        pipeline = QueryPipeline(verbose=True)
 
     logger.info("Class")
     logger.info(class_type)
     for x in inputs.copy():
         if isinstance(inputs[x], list):
-            input_data = inputs.pop(x)
+            input_data = inputs[x]
             logger.info("Input data")
             logger.info(input_data)
+
             input_unique_id = input_data[0]
             output_index = input_data[1]
-            kwargs, user_message, pipeline = recursive_add_link(
-                pipeline,
-                prompt,
-                input_unique_id
+            pipeline, prev_node_output_keys, root_node_inputs, _ = (
+                recursive_add_node_link(pipeline, prompt, input_unique_id)
             )
-            logger.info("Input node kwargs:")
-            logger.info(kwargs)
             input_class_type = prompt[input_unique_id]["class_type"]
-            input_class_def = nodes.NODE_CLASS_MAPPINGS[input_class_type]
             logger.info("Input class")
             logger.info(input_class_type)
-            input_required_keys = list(input_class_def.INPUT_TYPES()["required"].keys())
-            logger.info("Input required keys:")
-            logger.info(input_required_keys)
+            logger.info("Input node inputs")
+            logger.info(prev_node_output_keys)
 
-            input_node = input_class_def(**kwargs)
-            input_node_infos.append({
-                "src": input_node,
-                "src_module_key": input_class_type,
-                "src_key": input_required_keys[output_index],
-                "dest_key": x
-            })
+            input_node_infos.append(
+                {
+                    "src_module_key": input_class_type,
+                    "src_key": prev_node_output_keys[output_index],
+                    "dest_key": x,
+                }
+            )
             is_child_node = True
+        else:
+            # Keep the inputs to the node, not the init kwargs
+            init_kwargs.update({x: inputs.pop(x)})
 
     logger.info("Inputs:")
     logger.info(inputs)
-        
-    # Keep sending the message of the input node to the ouput node
+
     if is_child_node:
-        node = class_def(**inputs)
+        node = class_def(**init_kwargs)
+        output_keys = list(node.output_keys.required_keys)
         pipeline.add(module_key=class_type, module=node)
+
         for info in input_node_infos:
-            input_module = info["src"]
-            input_module_key = info["src_module_key"]
+            src_module_key = info["src_module_key"]
+            src_key = info["src_key"]
             dest_key = info["dest_key"]
-            # logger.info(input_module, input_module_key, dest_key)
-            if input_module_key not in pipeline.module_dict:
-                pipeline.add(module_key=input_module_key, module=input_module)
+
+            logger.info("Key:")
+            logger.info(src_module_key)
+            logger.info(src_key)
+            logger.info(class_type)
+            logger.info(dest_key)
+
             pipeline.add_link(
-                src=input_module_key,
+                src=src_module_key,
                 dest=class_type,
-                src_key=input_module_key,
+                src_key=src_key,
                 dest_key=dest_key,
             )
-        inputs.update({"user_message": user_message})
-    # If it's the input node, return the input node's inputs
+    # If it's the input node, keep its inputs
     else:
         node = class_def()
         pipeline.add(module_key=class_type, module=node)
+        return (
+            pipeline,
+            list(init_kwargs.keys()),
+            {class_type: init_kwargs},
+            leaf_node_inputs,
+        )
 
-    return inputs, user_message, pipeline
-    
+    # Add leaf node inputs
+    if class_type in leaf_node_inputs:
+        node_input_keys = list(node.input_keys.required_keys)
+        leaf_node_inputs.update({class_type: node_input_keys})
+
+    return pipeline, output_keys, root_node_inputs, leaf_node_inputs
+
+
+def link_root_to_leaf_nodes(
+    pipeline: QueryPipeline,
+    root_node_output_keys: List[str],
+    root_node_key: str,
+    leaf_node_key: str,
+):
+    for key in root_node_output_keys:
+        pipeline.add_link(root_node_key, leaf_node_key, src_key=key, dest_key=key)
+
 
 def recursive_execute(
     server,
@@ -228,7 +257,7 @@ def recursive_execute(
 
         if isinstance(input_data, list):
             input_unique_id = input_data[0]
-            output_index = input_data[1]
+            # output_index = input_data[1]
             if input_unique_id not in outputs:
                 result = recursive_execute(
                     server,
@@ -371,9 +400,7 @@ def recursive_output_delete_if_changed(prompt, old_prompt, outputs, current_item
         return True
 
     if not to_delete:
-        if is_changed != is_changed_old:
-            to_delete = True
-        elif unique_id not in old_prompt:
+        if is_changed != is_changed_old or unique_id not in old_prompt:
             to_delete = True
         elif inputs == old_prompt[unique_id]["inputs"]:
             for x in inputs:
@@ -620,17 +647,22 @@ class PromptExecutor:
 
             logger.info(to_execute)
             output_node_id = to_execute.pop(0)[-1]
-            input_msg, pipeline = recursive_add_link(
+            pipeline, _, root_inputs, leaf_inputs = recursive_add_node_link(
                 pipeline=None,
                 prompt=prompt,
                 current_item=output_node_id,
             )
 
+            input_kwargs = list(root_inputs.values())[0]
+            response = pipeline.run(**input_kwargs)
+            print(response.message.content)
+            self.outputs[output_node_id] = response
+
             for x in executed:
                 self.old_prompt[x] = copy.deepcopy(prompt[x])
             self.server.last_node_id = None
             if comfy.model_management.DISABLE_SMART_MEMORY:
-                comfy.model_management.unload_all_models()                
+                comfy.model_management.unload_all_models()
 
 
 def validate_inputs(prompt, item, validated):
@@ -865,7 +897,7 @@ def validate_prompt(prompt):
         if "class_type" not in prompt[x]:
             error = {
                 "type": "invalid_prompt",
-                "message": f"Cannot execute because a node is missing the class_type property.",
+                "message": "Cannot execute because a node is missing the class_type property.",
                 "details": f"Node ID '#{x}'",
                 "extra_info": {},
             }
@@ -1019,7 +1051,7 @@ class PromptQueue:
             if len(self.history) > MAXIMUM_HISTORY_SIZE:
                 self.history.pop(next(iter(self.history)))
 
-            status_dict: Optional[dict] = None
+            status_dict: dict | None = None
             if status is not None:
                 status_dict = copy.deepcopy(status._asdict())
 
