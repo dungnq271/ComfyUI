@@ -1,0 +1,29 @@
+{
+    "1": {
+        "inputs": {
+            "user_message": "Who is Elon Musk?"
+        },
+        "class_type": "Input"
+    },
+    "2": {
+        "inputs": {
+            "tool_name": "wikipedia_search",
+            "query": [
+                "1",
+                0
+            ]
+        },
+        "class_type": "Search"
+    },
+    "3": {
+        "inputs": {
+            "model_name": "claude-3-haiku-20240307",
+            "system_prompt": "You are an agent designed to summarize the given context",
+            "nodes": [
+                "2",
+                0
+            ]
+        },
+        "class_type": "Response"
+    }
+}
