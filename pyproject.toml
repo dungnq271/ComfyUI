@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "comfy-agent-workflow"
+requires-python = ">=3.10"
+authors = [
+    {name="Leonard Nguyen", email="dunnguyen2712002@gmail.com"},
+]
+readme = "README.md"
+version = "0.2.0"
+
+[tool.ruff]
+line-length = 88
+exclude = [
+   "experimental/*.py",
+   "temp/*.py",
+   "legacy/*.py"
+]
+
+[tool.ruff.lint]
+ignore = [
+   # More clarity
+   "UP015",
+   "SIM103",
+   "SIM211",
+   # Messes with pydantic
+   "UP035",
+   "UP006",
+   # Same as llama-index
+   "TCH002",
+   # Too strict
+   "B006",
+   "B008",
+   "B023",
+   "B028",
+   # Too new
+   "UP038",
+]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+unfixable = [
+    "ERA001",  # Same as llama-index
+]
