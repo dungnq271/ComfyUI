@@ -10,6 +10,7 @@ import random
 import logging
 
 from llama_index.core.llms import ChatMessage, LLM
+from llama_index.core.base.base_retriever import BaseRetriever
 from llama_index.core.query_pipeline import InputComponent, CustomQueryComponent
 from llama_index.core.schema import NodeWithScore
 from llama_index.core.bridge.pydantic import Field
@@ -39,7 +40,6 @@ def interrupt_processing(value=True):
 class Input(InputComponent):
     RETURN_TYPES: ClassVar[Tuple] = ("TEXT",)
     CATEGORY: ClassVar[str] = "input"
-    RETURN_TYPES = ("TEXT",)
 
     @classmethod
     def INPUT_TYPES(s):
@@ -50,28 +50,30 @@ class Input(InputComponent):
         }
 
 
-class Search:
+class Search(CustomQueryComponent):
+    tool: BaseRetriever = Field(..., description="Retriever Tool")
+
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "tool_name": (["google_search", "wikipedia_search"], ),
-                "query": ("TEXT", ),
+                "tool_name": (["google_search", "wikipedia_search"],),
+                "query": ("TEXT",),
             }
         }
 
-    RETURN_TYPES = ("NODE",)
-    CATEGORY = "SEARCH"
+    RETURN_TYPES: ClassVar[Tuple] = ("NODE",)
+    CATEGORY: ClassVar[str] = "search"
 
     def __init__(self, tool_name: str, **kwargs):
-        self.tool = DEFAULT_ALL_RETRIEVERS[tool_name]["retriever"]
+        super().__init__(tool=DEFAULT_ALL_RETRIEVERS[tool_name]["retriever"], **kwargs)
 
     @property
     def _input_keys(self) -> set:
         """Input keys dict."""
         # NOTE: These are required inputs. If you have optional inputs please override
         # `optional_input_keys_dict`
-        return {"tool_name", "query"}
+        return {"query"}
 
     @property
     def _output_keys(self) -> set:
@@ -80,7 +82,7 @@ class Search:
     def _run_component(self, **kwargs) -> Dict[str, Any]:
         nodes = self.tool.retrieve(kwargs["query"])
         return {"nodes": nodes}
-    
+
 
 DEFAULT_CONTEXT_PROMPT = (
     "Here is some context that may be relevant:\n"
@@ -90,6 +92,7 @@ DEFAULT_CONTEXT_PROMPT = (
     "Please write a response to the following question, using the above context:\n"
     "{query_str}\n"
 )
+
 
 class ResponseWithChatHistory(CustomQueryComponent):
     llm: LLM = Field(..., description="LLM to use")
@@ -106,29 +109,31 @@ class ResponseWithChatHistory(CustomQueryComponent):
     CATEGORY: ClassVar[str] = "text"
 
     def __init__(
-        self,
-        model_name,
-        system_prompt,
-        context_prompt: str | Any = None,
-        **kwargs
+        self, model_name, system_prompt, context_prompt: str | Any = None, **kwargs
     ):
-        self.llm = comfy.llm.get_llm(model_name)
-        self.system_prompt = system_prompt
-        self.context_prompt = context_prompt or DEFAULT_CONTEXT_PROMPT
-        self.type = "output"
+        super().__init__(
+            llm=comfy.llm.get_llm(model_name),
+            system_prompt=system_prompt,
+            context_prompt=context_prompt or DEFAULT_CONTEXT_PROMPT,
+            type="output",
+        )
+        # self.system_prompt = system_prompt
+        # self.context_prompt = context_prompt or DEFAULT_CONTEXT_PROMPT
+        # self.type = "output"
 
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "model_name": (["gpt-3.5-turbo", "claude-3-haiku-20240307"],),
-                "system_prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}), 
+                "system_prompt": (
+                    "STRING",
+                    {"multiline": True, "dynamicPrompts": True},
+                ),
             }
         }
 
-    def _validate_component_inputs(
-        self, input: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    def _validate_component_inputs(self, input: Dict[str, Any]) -> Dict[str, Any]:
         """Validate component inputs during run_component."""
         # NOTE: this is OPTIONAL but we show you where to do validation as an example
         return input
@@ -138,7 +143,7 @@ class ResponseWithChatHistory(CustomQueryComponent):
         """Input keys dict."""
         # NOTE: These are required inputs. If you have optional inputs please override
         # `optional_input_keys_dict`
-        return {"chat_history", "nodes", "query_str"}
+        return {"nodes"}
 
     @property
     def _output_keys(self) -> set:
@@ -159,7 +164,6 @@ class ResponseWithChatHistory(CustomQueryComponent):
             node_context=node_context, query_str=query_str
         )
         user_message = ChatMessage(role="user", content=formatted_context)
-
         chat_history.append(user_message)
 
         if self.system_prompt is not None:
@@ -169,15 +173,34 @@ class ResponseWithChatHistory(CustomQueryComponent):
 
         return chat_history
 
+    def _simple_prepare_context(
+        self,
+        nodes: List[NodeWithScore],
+    ) -> List[ChatMessage]:
+        node_context = ""
+        for idx, node in enumerate(nodes):
+            node_text = node.get_content(metadata_mode="llm")
+            node_context += f"Context Chunk {idx}:\n{node_text}\n\n"
+
+        user_message = ChatMessage(role="user", content=node_context)
+
+        if self.system_prompt is not None:
+            chat_history = [ChatMessage(role="system", content=self.system_prompt)] + [
+                user_message
+            ]
+
+        return chat_history
+
     def _run_component(self, **kwargs) -> Dict[str, Any]:
         """Run the component."""
-        chat_history = kwargs["chat_history"]
         nodes = kwargs["nodes"]
-        query_str = kwargs["query_str"]
+        # chat_history = kwargs["chat_history"]
+        # query_str = kwargs["query_str"]
 
-        prepared_context = self._prepare_context(
-            chat_history, nodes, query_str
-        )
+        # prepared_context = self._prepare_context(
+        #     chat_history, nodes, query_str
+        # )
+        prepared_context = self._simple_prepare_context(nodes)
 
         response = self.llm.chat(prepared_context)
 
@@ -190,9 +213,7 @@ class ResponseWithChatHistory(CustomQueryComponent):
         nodes = kwargs["nodes"]
         query_str = kwargs["query_str"]
 
-        prepared_context = self._prepare_context(
-            chat_history, nodes, query_str
-        )
+        prepared_context = self._prepare_context(chat_history, nodes, query_str)
 
         response = await self.llm.achat(prepared_context)
 
@@ -207,7 +228,7 @@ NODE_CLASS_MAPPINGS = {
 
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Input": "Input (Prompt)",
+    "Input": "Input",
     "Search": "Search API",
     "Response": "Response",
 }
